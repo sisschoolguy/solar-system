@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive 3D Solar System</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: 'Arial', sans-serif; /* Using Arial for broad compatibility */
+            background-color: #000010; /* Deep space blue */
+            color: #fff;
+            overflow: hidden; /* Prevent scrollbars from canvas */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        #infoPanel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border-radius: 10px; /* Rounded corners */
+            border: 1px solid #444;
+            font-size: 16px;
+            display: none; /* Hidden by default */
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+        }
+
+        #infoPanel h2 {
+            margin-top: 0;
+            margin-bottom: 10px;
+            color: #ffcc00; /* Sun-like color for title */
+        }
+
+        #infoPanel p {
+            margin: 5px 0;
+        }
+
+        #resetViewButton {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 12px 25px;
+            font-size: 16px;
+            color: #fff;
+            background-color: #007bff; /* A nice blue */
+            border: none;
+            border-radius: 25px; /* Pill shape */
+            cursor: pointer;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+            transition: background-color 0.3s ease, transform 0.1s ease;
+        }
+
+        #resetViewButton:hover {
+            background-color: #0056b3; /* Darker blue on hover */
+        }
+        #resetViewButton:active {
+            transform: translateX(-50%) scale(0.95); /* Click effect */
+        }
+
+        #loadingScreen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #000010;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            color: #fff;
+            font-size: 24px;
+        }
+
+        canvas {
+            display: block; /* Removes bottom margin/space */
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tween.js/18.6.4/tween.umd.min.js"></script>
+</head>
+<body>
+    <div id="loadingScreen">Loading Solar System...</div>
+    <div id="infoPanel">
+        <h2 id="planetName">Planet Name</h2>
+        <p id="planetDistance">Distance from Sun: </p>
+        <p id="planetRadius">Radius: </p>
+        <p id="planetOrbitSpeed">Orbital Speed: </p>
+        <p id="planetRotationSpeed">Rotation Speed: </p>
+    </div>
+    <button id="resetViewButton">Reset View</button>
+
+    <script>
+        // --- Global Variables ---
+        let scene, camera, renderer, controls;
+        let sun, skySphere;
+        const planets = []; // To store planet objects for interaction
+        const planetData = [
+            // Data: name, color, radius (relative to Earth=1), orbitalRadius (arbitrary units), orbitalSpeed (relative to Earth=1), rotationSpeed (visual), realDistance, realRadius
+            { name: 'Mercury', color: 0xaaaaaa, radius: 0.38, orbitalRadius: 12, orbitalSpeed: 1.60, rotationSpeed: 0.005, realDistance: "57.9 million km", realRadius: "2,440 km" },
+            { name: 'Venus', color: 0xffe0b3, radius: 0.95, orbitalRadius: 16, orbitalSpeed: 1.18, rotationSpeed: 0.002, realDistance: "108.2 million km", realRadius: "6,052 km" }, // Venus rotates very slowly
+            { name: 'Earth', color: 0x6699ff, radius: 1.00, orbitalRadius: 20, orbitalSpeed: 1.00, rotationSpeed: 0.01, realDistance: "149.6 million km", realRadius: "6,371 km" },
+            { name: 'Mars', color: 0xff7f50, radius: 0.53, orbitalRadius: 26, orbitalSpeed: 0.81, rotationSpeed: 0.009, realDistance: "227.9 million km", realRadius: "3,390 km" },
+            { name: 'Jupiter', color: 0xffd700, radius: 3.5, orbitalRadius: 45, orbitalSpeed: 0.44, rotationSpeed: 0.025, realDistance: "778.5 million km", realRadius: "69,911 km" }, // Jupiter rotates fast
+            { name: 'Saturn', color: 0xf0e68c, radius: 3.0, orbitalRadius: 65, orbitalSpeed: 0.32, rotationSpeed: 0.022, hasRing: true, realDistance: "1,434.0 million km", realRadius: "58,232 km" },
+            { name: 'Uranus', color: 0xace5ee, radius: 2.0, orbitalRadius: 80, orbitalSpeed: 0.23, rotationSpeed: 0.015, realDistance: "2,871.0 million km", realRadius: "25,362 km" },
+            { name: 'Neptune', color: 0x6495ed, radius: 1.9, orbitalRadius: 95, orbitalSpeed: 0.18, rotationSpeed: 0.014, realDistance: "4,495.0 million km", realRadius: "24,622 km" }
+        ];
+        const SUN_RADIUS_SCALE = 6; // Visual scale for the sun
+        const PLANET_RADIUS_SCALE = 0.7; // General visual scale for planets
+        const ORBIT_LINE_OPACITY = 0.3;
+
+        let initialCameraPosition = new THREE.Vector3(0, 60, 130); // Store initial camera position
+        let initialControlsTarget = new THREE.Vector3(0, 0, 0); // Store initial controls target
+
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        const infoPanel = document.getElementById('infoPanel');
+        const planetNameEl = document.getElementById('planetName');
+        const planetDistanceEl = document.getElementById('planetDistance');
+        const planetRadiusEl = document.getElementById('planetRadius');
+        const planetOrbitSpeedEl = document.getElementById('planetOrbitSpeed');
+        const planetRotationSpeedEl = document.getElementById('planetRotationSpeed'); // New element for rotation speed
+        const loadingScreen = document.getElementById('loadingScreen');
+
+        // --- Initialization ---
+        function init() {
+            // Scene
+            scene = new THREE.Scene();
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
+            camera.position.copy(initialCameraPosition);
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio); // For sharper images on high DPI screens
+            document.body.appendChild(renderer.domElement);
+
+            // Controls
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true; // Smooth camera movement
+            controls.dampingFactor = 0.05;
+            controls.screenSpacePanning = false;
+            controls.minDistance = 5;
+            controls.maxDistance = 500;
+            controls.target.copy(initialControlsTarget);
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.3); // Soft ambient light
+            scene.add(ambientLight);
+
+            const pointLight = new THREE.PointLight(0xffffff, 1.5, 1000); // Sun's light
+            scene.add(pointLight); // The light source will be at the sun's position (0,0,0)
+
+            // Create celestial bodies
+            createSun();
+            planetData.forEach(data => createPlanet(data));
+            createStarfield();
+
+
+            // Event Listeners
+            window.addEventListener('resize', onWindowResize, false);
+            document.addEventListener('click', onClick, false);
+            document.getElementById('resetViewButton').addEventListener('click', resetView);
+            
+            // Hide loading screen
+            loadingScreen.style.display = 'none';
+
+            // Start animation loop
+            animate();
+        }
+
+        // --- Create Sun ---
+        function createSun() {
+            const sunGeometry = new THREE.SphereGeometry(SUN_RADIUS_SCALE, 64, 64);
+            // Make the sun glow and not be affected by other lights as much
+            const sunMaterial = new THREE.MeshBasicMaterial({ color: 0xffcc33, map: createSunTexture() });
+            sun = new THREE.Mesh(sunGeometry, sunMaterial);
+            sun.name = "Sun"; // For identification
+            scene.add(sun);
+        }
+
+        // --- Create Sun Texture (Procedural) ---
+        function createSunTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 256;
+            canvas.height = 256;
+            const context = canvas.getContext('2d');
+
+            // Base yellow
+            context.fillStyle = '#FFCC33'; // Bright yellow
+            context.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Add some orange/red mottling for a more dynamic look
+            for (let i = 0; i < 1000; i++) {
+                const x = Math.random() * canvas.width;
+                const y = Math.random() * canvas.height;
+                const radius = Math.random() * 30;
+                const grad = context.createRadialGradient(x, y, 0, x, y, radius);
+                grad.addColorStop(0, 'rgba(255, 165, 0, 0.3)'); // Orange, semi-transparent
+                grad.addColorStop(1, 'rgba(255, 69, 0, 0)');   // Red, fully transparent at edge
+                context.fillStyle = grad;
+                context.fillRect(0, 0, canvas.width, canvas.height);
+            }
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.needsUpdate = true;
+            return texture;
+        }
+
+
+        // --- Create Planet ---
+        function createPlanet(data) {
+            const planetGeometry = new THREE.SphereGeometry(data.radius * PLANET_RADIUS_SCALE, 32, 32);
+            const planetMaterial = new THREE.MeshStandardMaterial({ color: data.color, roughness: 0.8, metalness: 0.2 });
+            const planetMesh = new THREE.Mesh(planetGeometry, planetMaterial);
+            planetMesh.name = data.name; // For identification in raycasting
+            planetMesh.userData = data; // Store all data for info panel
+
+            // Create a pivot point for the planet's orbit
+            const pivot = new THREE.Object3D();
+            scene.add(pivot);
+            pivot.add(planetMesh);
+
+            // Position planet along its orbit
+            planetMesh.position.x = data.orbitalRadius;
+
+            // Store planet and its pivot for animation and interaction
+            planets.push({ mesh: planetMesh, pivot: pivot, data: data });
+
+            // Create orbit line
+            const orbitGeometry = new THREE.BufferGeometry().setFromPoints(
+                new THREE.Path().absellipse(0, 0, data.orbitalRadius, data.orbitalRadius, 0, Math.PI * 2, false).getSpacedPoints(128)
+            );
+            const orbitMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: ORBIT_LINE_OPACITY });
+            const orbitLine = new THREE.Line(orbitGeometry, orbitMaterial);
+            orbitLine.rotation.x = Math.PI / 2; // Rotate to be in XZ plane
+            scene.add(orbitLine);
+
+            // Saturn's Rings
+            if (data.hasRing) {
+                const ringGeometry = new THREE.RingGeometry(data.radius * PLANET_RADIUS_SCALE * 1.2, data.radius * PLANET_RADIUS_SCALE * 2, 64);
+                // Simple ring texture
+                const ringCanvas = document.createElement('canvas');
+                ringCanvas.width = 64;
+                ringCanvas.height = 16;
+                const ringCtx = ringCanvas.getContext('2d');
+                ringCtx.fillStyle = 'rgba(200, 200, 180, 0.7)'; // Translucent beige
+                ringCtx.fillRect(0,0,64,16);
+                for(let i=0; i<64; i+=2) {
+                    ringCtx.fillStyle = `rgba(180,180,160, ${Math.random()*0.3 + 0.4})`;
+                    ringCtx.fillRect(i,0,1,16);
+                }
+                const ringTexture = new THREE.CanvasTexture(ringCanvas);
+
+                const ringMaterial = new THREE.MeshBasicMaterial({ 
+                    map: ringTexture,
+                    side: THREE.DoubleSide, 
+                    transparent: true, 
+                    opacity: 0.8 
+                });
+                const ringMesh = new THREE.Mesh(ringGeometry, ringMaterial);
+                ringMesh.rotation.x = Math.PI / 2 + 0.1; // Tilt rings slightly
+                planetMesh.add(ringMesh); // Add rings as child of planet
+            }
+        }
+
+        // --- Create Starfield ---
+        function createStarfield() {
+            const starGeometry = new THREE.BufferGeometry();
+            const starMaterial = new THREE.PointsMaterial({
+                color: 0xffffff,
+                size: 0.15, // Adjust size of stars
+                transparent: true,
+                opacity: 0.8
+            });
+
+            const starVertices = [];
+            for (let i = 0; i < 10000; i++) { // Number of stars
+                const x = (Math.random() - 0.5) * 1500; // Spread stars out
+                const y = (Math.random() - 0.5) * 1500;
+                const z = (Math.random() - 0.5) * 1500;
+                // Ensure stars are far enough to form a background
+                if (Math.sqrt(x*x + y*y + z*z) > 300) { // Minimum distance from center
+                     starVertices.push(x, y, z);
+                }
+            }
+
+            starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
+            const stars = new THREE.Points(starGeometry, starMaterial);
+            scene.add(stars);
+        }
+
+        // --- Handle Window Resize ---
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- Handle Click Events for Planet Interaction ---
+        function onClick(event) {
+            // Calculate mouse position in normalized device coordinates (-1 to +1)
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(planets.map(p => p.mesh)); // Check intersection with planet meshes
+
+            if (intersects.length > 0) {
+                const clickedObject = intersects[0].object;
+                if (clickedObject.name !== "Sun") { // Don't zoom into sun, could add later
+                    zoomToPlanet(clickedObject);
+                    displayPlanetInfo(clickedObject.userData);
+                }
+            } else {
+                // If clicking on empty space and not already in overview, consider resetting or deselecting
+                // For now, clicking empty space does nothing if already zoomed. Use button to reset.
+            }
+        }
+
+        // --- Display Planet Info ---
+        function displayPlanetInfo(data) {
+            planetNameEl.textContent = data.name;
+            planetDistanceEl.textContent = `Avg. Distance from Sun: ${data.realDistance}`;
+            planetRadiusEl.textContent = `Equatorial Radius: ${data.realRadius}`;
+            planetOrbitSpeedEl.textContent = `Relative Orbital Speed: ${data.orbitalSpeed}x Earth`;
+            planetRotationSpeedEl.textContent = `Visual Rotation Speed: ${data.rotationSpeed * 1000} (arbitrary units)`; // Display rotation speed
+            infoPanel.style.display = 'block';
+        }
+
+        // --- Zoom to Planet ---
+        function zoomToPlanet(planetObject) {
+            const planetWorldPosition = new THREE.Vector3();
+            planetObject.getWorldPosition(planetWorldPosition);
+
+            const offsetDistance = planetObject.geometry.parameters.radius * 5 + 5; // Adjust zoom distance based on planet size
+            const cameraEndPosition = new THREE.Vector3(
+                planetWorldPosition.x,
+                planetWorldPosition.y + offsetDistance / 2, // Slightly above
+                planetWorldPosition.z + offsetDistance
+            );
+
+            // Animate camera position
+            new TWEEN.Tween(camera.position)
+                .to(cameraEndPosition, 1500) // 1.5 seconds animation
+                .easing(TWEEN.Easing.Quadratic.InOut)
+                .start();
+
+            // Animate controls target
+            new TWEEN.Tween(controls.target)
+                .to(planetWorldPosition, 1500)
+                .easing(TWEEN.Easing.Quadratic.InOut)
+                .onUpdate(() => controls.update()) // Important for OrbitControls
+                .start();
+            
+            controls.minDistance = 1; // Allow closer zoom
+            controls.maxDistance = 100; // Limit how far out you can zoom from planet
+        }
+
+        // --- Reset View ---
+        function resetView() {
+            // Animate camera back to initial position
+            new TWEEN.Tween(camera.position)
+                .to(initialCameraPosition, 1500)
+                .easing(TWEEN.Easing.Quadratic.InOut)
+                .start();
+
+            // Animate controls target back to initial target (origin)
+            new TWEEN.Tween(controls.target)
+                .to(initialControlsTarget, 1500)
+                .easing(TWEEN.Easing.Quadratic.InOut)
+                .onUpdate(() => controls.update())
+                .start();
+            
+            controls.minDistance = 5; // Reset zoom limits
+            controls.maxDistance = 500;
+            infoPanel.style.display = 'none'; // Hide info panel
+        }
+
+        // --- Animation Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const time = Date.now() * 0.0001; // Time factor for orbital speed
+
+            // Animate planets orbiting the Sun and spinning on their axis
+            planets.forEach(p => {
+                if (p.pivot) { // Ensure pivot exists
+                    // Orbital motion
+                    const baseOrbitSpeedFactor = 0.2; 
+                    p.pivot.rotation.y = time * p.data.orbitalSpeed * baseOrbitSpeedFactor;
+                }
+                // Axial rotation (spinning)
+                if (p.mesh && p.data.rotationSpeed) {
+                    p.mesh.rotation.y += p.data.rotationSpeed; 
+                }
+            });
+
+            controls.update(); // Required if enableDamping or autoRotate is set
+            TWEEN.update(); // Update TWEEN animations
+            renderer.render(scene, camera);
+        }
+
+        // --- Start the simulation ---
+        // Check for WebGL support before initializing
+        if (typeof THREE !== 'undefined' && typeof TWEEN !== 'undefined' && typeof THREE.OrbitControls !== 'undefined') {
+            if (window.WebGLRenderingContext) { // Basic check for WebGL
+                 // More robust check
+                const canvas = document.createElement('canvas');
+                if (canvas.getContext('webgl') || canvas.getContext('experimental-webgl')) {
+                    init();
+                } else {
+                    document.getElementById('loadingScreen').textContent = 'WebGL is not supported by your browser. Please try a different browser or update your current one.';
+                    console.error('WebGL not supported');
+                }
+            } else {
+                 document.getElementById('loadingScreen').textContent = 'WebGL is not available. Please enable it or use a modern browser.';
+                 console.error('WebGL not available');
+            }
+        } else {
+            document.getElementById('loadingScreen').textContent = 'Error: Required libraries (Three.js, TWEEN.js, OrbitControls) not loaded. Check your internet connection or script paths.';
+            console.error('A required library (Three.js, TWEEN.js, OrbitControls) failed to load.');
+        }
+
+    </script>
+</body>
+</html>
